@@ -11,7 +11,7 @@ for App Store review from there. The workflow never submits for review itself.
 - An [xtool](https://github.com/xtool-org/xtool) project: `Package.swift` plus
   `xtool.yml`, with `infoPath` pointing to the app's Info.plist.
 - A self-hosted Linux runner with omarchy-apple-dev installed in full mode (the
-  toolchain and the iOS SDK), registered with the label `omarchy`.
+  toolchain and the iOS SDK), registered with the label `ios-sdk`.
 - An App Store Connect team API key with the App Manager role and access to
   Certificates, Identifiers & Profiles. Store it as three secrets in the app's
   repository: `ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_P8` (the `.p8` file's
@@ -57,7 +57,7 @@ version.
 
 | Input | Default | |
 |---|---|---|
-| `runs-on` | `["self-hosted", "Linux", "omarchy"]` | Runner labels, as a JSON list |
+| `runs-on` | `["self-hosted", "Linux", "ios-sdk"]` | Runner labels, as a JSON list |
 | `info-plist` | `infoPath` from `xtool.yml` | Info.plist to set the version in |
 | `omarchy-apple-dev` | `~/.local/share/omarchy-apple-dev` | omarchy-apple-dev on the runner |
 
