@@ -1,0 +1,133 @@
+name: iOS release
+
+# Reusable workflow: build an xtool iOS app with omarchy-apple-dev on a self-hosted Linux
+# runner, upload it to App Store Connect (TestFlight, and App Store review when you submit it),
+# and attach the .ipa to the GitHub release that triggered it.
+#
+# Call it from a workflow that runs on `release: published`, with a tag v<version>+<build>
+# (for example v1.0+5). See README.md.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: "JSON list of runner labels"
+        type: string
+        default: '["self-hosted", "Linux", "omarchy"]'
+      info-plist:
+        description: "Info.plist that holds CFBundleShortVersionString (default: infoPath from xtool.yml)"
+        type: string
+        default: ""
+      omarchy-apple-dev:
+        description: "omarchy-apple-dev checkout on the runner (default: ~/.local/share/omarchy-apple-dev)"
+        type: string
+        default: ""
+    secrets:
+      ASC_KEY_ID:
+        required: true
+      ASC_ISSUER_ID:
+        required: true
+      ASC_KEY_P8:
+        required: true
+
+# Nothing by default; the job asks for what it needs.
+permissions: {}
+
+# One upload per app at a time; App Store Connect build numbers must keep increasing.
+# Queued, never cancelled: cancelling mid-upload leaves App Store Connect half-done.
+concurrency: # zizmor: ignore[concurrency-limits]
+  group: ios-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  ship:
+    name: Build and upload to App Store Connect
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 60
+    permissions:
+      contents: write # attach the .ipa to the release
+    env:
+      # Untrusted values reach scripts only through the environment, never ${{ }} in a script.
+      TAG: ${{ github.event.release.tag_name }}
+      INFO_PLIST_INPUT: ${{ inputs.info-plist }}
+      OMARCHY_APPLE_DEV_INPUT: ${{ inputs.omarchy-apple-dev }}
+    steps:
+      - name: Version from the release tag
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != release ]; then
+            echo "::error::Call this workflow from a release event (got $GITHUB_EVENT_NAME)"
+            exit 1
+          fi
+          # v1.0+5 -> CFBundleShortVersionString 1.0, CFBundleVersion 5
+          if [[ ! "$TAG" =~ ^v?([0-9]+(\.[0-9]+){0,2})\+([0-9]+(\.[0-9]+){0,2})$ ]]; then
+            echo "::error::Release tag is not v<version>+<build>, for example v1.0+5"
+            exit 1
+          fi
+          echo "VERSION=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=${BASH_REMATCH[3]}" >> "$GITHUB_ENV"
+          echo "Version ${BASH_REMATCH[1]}, build ${BASH_REMATCH[3]}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check toolchain
+        run: |
+          dir=${OMARCHY_APPLE_DEV_INPUT:-$HOME/.local/share/omarchy-apple-dev}
+          test -x "$dir/ship.sh" || { echo "::error::omarchy-apple-dev not found at $dir"; exit 1; }
+          echo "OMARCHY_APPLE_DEV=$dir" >> "$GITHUB_ENV"
+          swift --version
+          swift sdk list | grep -qx darwin || { echo "::error::Darwin SDK not registered; run install-toolchain.sh"; exit 1; }
+
+      - name: Set the version
+        run: |
+          plist=$INFO_PLIST_INPUT
+          if [ -z "$plist" ]; then
+            plist=$(sed -n 's/^infoPath:[[:space:]]*//p' xtool.yml | tr -d "\"'" | head -n1)
+          fi
+          [ -n "$plist" ] || { echo "::error::No Info.plist: set infoPath in xtool.yml or the info-plist input"; exit 1; }
+          # Only a file inside this checkout.
+          real=$(realpath -e -- "$plist") || { echo "::error::$plist does not exist"; exit 1; }
+          case "$real" in "$GITHUB_WORKSPACE"/*) ;; *) echo "::error::$plist is outside the repository"; exit 1 ;; esac
+          python3 - "$real" "$VERSION" <<'EOF'
+          import plistlib, sys
+          path, version = sys.argv[1:]
+          with open(path, "rb") as f:
+              info = plistlib.load(f)
+          info["CFBundleShortVersionString"] = version
+          with open(path, "wb") as f:
+              plistlib.dump(info, f)
+          EOF
+
+      - name: Build, sign and upload to App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          ulimit -n 65536
+          export ASC_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          (umask 077 && printf '%s\n' "$ASC_KEY_P8" > "$ASC_KEY_PATH")
+          unset ASC_KEY_P8
+          "$OMARCHY_APPLE_DEV/ship.sh" --upload
+
+      - name: Attach the .ipa to the release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UPLOAD_URL: ${{ github.event.release.upload_url }}
+        run: |
+          shopt -s nullglob
+          ipas=(xtool/*.ipa)
+          [ "${#ipas[@]}" = 1 ] || { echo "::error::expected one .ipa in xtool/, found ${#ipas[@]}"; exit 1; }
+          app=$(basename "${ipas[0]}" .ipa)
+          name=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' \
+            "$app-$VERSION-$BUILD_NUMBER.ipa")
+          curl -fsS -X POST "${UPLOAD_URL%\{*}?name=$name" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @"${ipas[0]}" -o /dev/null
+          echo "Attached $app-$VERSION-$BUILD_NUMBER.ipa"
+
+      - name: Clean up signing material
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/AuthKey.p8" xtool/ship-signing
