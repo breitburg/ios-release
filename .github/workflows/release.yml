@@ -99,6 +99,20 @@ jobs:
               plistlib.dump(info, f)
           EOF
 
+      - name: Entitlements
+        run: |
+          # The signer requests and signs push, Sign in with Apple and Associated Domains from this file.
+          path=$(sed -n 's/^entitlementsPath:[[:space:]]*//p' xtool.yml | tr -d "\"'" | head -n1)
+          if [ -z "$path" ]; then
+            echo "No entitlementsPath in xtool.yml; signing without entitlements"
+            exit 0
+          fi
+          # Only a file inside this checkout.
+          real=$(realpath -e -- "$path") || { echo "::error::$path does not exist"; exit 1; }
+          case "$real" in "$GITHUB_WORKSPACE"/*) ;; *) echo "::error::$path is outside the repository"; exit 1 ;; esac
+          echo "ASC_ENTITLEMENTS_PATH=$real" >> "$GITHUB_ENV"
+          echo "Signing with entitlements from $path"
+
       - name: Build, sign and upload to App Store Connect
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}

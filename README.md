@@ -17,6 +17,11 @@ for App Store review from there. The workflow never submits for review itself.
   repository: `ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_P8` (the `.p8` file's
   contents).
 - The app record created in App Store Connect.
+- For capabilities, `entitlementsPath` in `xtool.yml` pointing to the app's
+  entitlements plist. The signer requests push, Sign in with Apple
+  (`["Default"]`) and Associated Domains from it. Enable each capability for
+  the bundle ID under Certificates, Identifiers & Profiles first: a profile
+  that doesn't grant one stops the signing and names it.
 
 ## Usage
 
